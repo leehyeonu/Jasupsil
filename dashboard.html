@@ -2,31 +2,26 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>교실 소음·집중도 알리미 - 대시보드</title>
 <style>
-  :root {
-    --bg:#0f172a; --card:#111827cc; --text:#e5e7eb; --muted:#94a3b8;
-    --green:#22c55e; --yellow:#f59e0b; --red:#ef4444; --offline:#334155;
-  }
-  body { margin:0; font-family:system-ui, -apple-system, Segoe UI, Roboto; background:radial-gradient(1200px 800px at 20% 10%, #0b1220, #0f172a); color:var(--text);}
-  header { padding:14px 18px; display:flex; justify-content:space-between; align-items:center; background:#0b1220aa; backdrop-filter: blur(8px);}
-  .grid { padding:18px; display:grid; grid-template-columns: repeat(3, 1fr); gap:16px; }
-  .card { background:var(--card); border-radius:16px; padding:16px; box-shadow: 0 10px 30px rgba(0,0,0,.35); display:flex; flex-direction:column; gap:8px; }
+  :root { --bg:#0f172a; --card:#111827cc; --text:#e5e7eb; --muted:#94a3b8; }
+  body { margin:0; font-family:system-ui,-apple-system,Segoe UI,Roboto; background:radial-gradient(1200px 800px at 20% 10%, #0b1220, #0f172a); color:var(--text); }
+  header { padding:14px 18px; display:flex; justify-content:space-between; align-items:center; background:#0b1220aa; backdrop-filter:blur(8px); }
+  .grid { padding:18px; display:grid; grid-template-columns:repeat(3,1fr); gap:16px; }
+  .card { background:var(--card); border-radius:16px; padding:16px; box-shadow:0 10px 30px rgba(0,0,0,.35); display:flex; flex-direction:column; gap:8px; }
   .title { display:flex; justify-content:space-between; align-items:center; }
-  .badge { font-size:12px; color:#0b1220; padding:4px 8px; border-radius:999px; font-weight:700;}
-  .state { font-size: clamp(22px,3.2vw,34px); font-weight:800; }
-  .meta { color:var(--muted); font-size:14px; display:flex; gap:12px; flex-wrap:wrap;}
-  .bar { height:10px; width:100%; background:#0b1220; border-radius:999px; overflow:hidden; border:1px solid #1f2937;}
-  .fill { height:100%; width:0%; background:linear-gradient(90deg,#22c55e,#f59e0b,#ef4444); transition: width 200ms; }
-  @media (max-width: 860px){ .grid{ grid-template-columns:1fr; } }
+  .badge { font-size:12px; color:#0b1220; padding:4px 8px; border-radius:999px; font-weight:700; }
+  .state { font-size:clamp(22px,3.2vw,34px); font-weight:800; }
+  .meta { color:var(--muted); font-size:14px; display:flex; gap:12px; flex-wrap:wrap; }
+  .bar { height:10px; width:100%; background:#0b1220; border-radius:999px; overflow:hidden; border:1px solid #1f2937; }
+  .fill { height:100%; width:0%; background:linear-gradient(90deg,#22c55e,#f59e0b,#ef4444); transition:width 200ms; }
+  @media (max-width:860px){ .grid{ grid-template-columns:1fr; } }
 </style>
+
 <header>
   <strong>교실 소음·집중도 알리미 · 대시보드</strong>
   <span style="color:var(--muted); font-size:14px;">실시간 · 9개 반</span>
 </header>
 <div class="grid" id="grid"></div>
 
-<!-- Firebase -->
-<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
 <script type="module">
   import { initializeApp } from "https://www.gstatic.com/firebasejs/12.1.0/firebase-app.js";
   import { getDatabase, ref, onValue } from "https://www.gstatic.com/firebasejs/12.1.0/firebase-database.js";
@@ -36,7 +31,6 @@
     authDomain: "jasupsil.firebaseapp.com",
     databaseURL: "https://jasupsil-default-rtdb.firebaseio.com",
     projectId: "jasupsil",
-    // storageBucket: "jasupsil.appspot.com",
     messagingSenderId: "1042128694552",
     appId: "1:1042128694552:web:716099a644d957cd9e026d"
   };
@@ -46,11 +40,12 @@
 
   const rooms = Array.from({length:9}, (_,i)=> String(i+1));
   const grid = document.getElementById('grid');
+
   const cardTemplate = r => `
     <div class="card" id="card-${r}">
       <div class="title">
         <div><strong>${r}반</strong></div>
-        <div id="badge-${r}" class="badge" style="background:#e2e8f0;">OFFLINE</div>
+        <div id="badge-${r}" class="badge" style="background:#cbd5e1;">OFFLINE</div>
       </div>
       <div id="state-${r}" class="state">-</div>
       <div class="bar"><div id="fill-${r}" class="fill"></div></div>
@@ -62,9 +57,8 @@
     </div>`;
   grid.innerHTML = rooms.map(cardTemplate).join('');
 
-  function setCard(r, snapVal) {
-    const now = Date.now();
-    const data = snapVal?.[r];
+  function setCard(r, snapshotValue){
+    const data = snapshotValue?.[r];
     const stateEl = document.getElementById('state-'+r);
     const emaEl = document.getElementById('ema-'+r);
     const ageEl = document.getElementById('age-'+r);
@@ -72,36 +66,37 @@
     const badge = document.getElementById('badge-'+r);
     const modeEl = document.getElementById('mode-'+r);
 
-    if (!data || !data.now) {
-      stateEl.textContent = '오프라인';
-      emaEl.textContent = '0.000';
-      ageEl.textContent = '-';
-      fillEl.style.width = '0%';
-      badge.textContent = 'OFFLINE'; badge.style.background = '#cbd5e1';
+    if (!data || !data.now){
+      stateEl.textContent='오프라인';
+      emaEl.textContent='0.000';
+      ageEl.textContent='-';
+      fillEl.style.width='0%';
+      badge.textContent='OFFLINE'; badge.style.background='#cbd5e1';
       return;
     }
     const { ema=0, level='-', ts=0 } = data.now;
-    const mode = data.mode || 'selfstudy';
-    const ageSec = ts ? Math.floor((now - ts)/1000) : null;
+    const ageSec = ts ? Math.floor((Date.now()-ts)/1000) : null;
+    modeEl.textContent = data.mode || 'selfstudy';
 
-    modeEl.textContent = mode;
+    // 15초 이내면 온라인으로 간주(업로드 10초 주기 고려)
+    const online = ts && ageSec<=15;
 
-    let bg = '#cbd5e1', label = 'OFFLINE';
-    if (ts && ageSec <= 15) {
-      if (level==='정상'){ bg = '#86efac'; label='GREEN'; }
-      else if (level==='주의'){ bg = '#fde68a'; label='YELLOW'; }
-      else if (level==='시끄러움'){ bg = '#fca5a5'; label='RED'; }
+    let bg='#cbd5e1', label='OFFLINE';
+    if (online){
+      if (level==='정상'){ bg='#86efac'; label='GREEN'; }
+      else if (level==='주의'){ bg='#fde68a'; label='YELLOW'; }
+      else if (level==='시끄러움'){ bg='#fca5a5'; label='RED'; }
     }
-    badge.textContent = label; badge.style.background = bg;
+    badge.textContent=label; badge.style.background=bg;
 
-    stateEl.textContent = (ts && ageSec<=10) ? level : '오프라인';
+    stateEl.textContent = online ? level : '오프라인';
     emaEl.textContent = Number(ema).toFixed(3);
-    ageEl.textContent = ts ? (ageSec<=10 ? `${ageSec}s 전` : `${ageSec}s 지남`) : '-';
+    ageEl.textContent = ts ? (online ? `${ageSec}s 전` : `${ageSec}s 지남`) : '-';
     fillEl.style.width = Math.max(0, Math.min(100, Math.round(Number(ema)*100))) + '%';
   }
 
-  onValue(ref(db, 'rooms'), (snapshot) => {
-    const val = snapshot.val() || {};
+  onValue(ref(db, 'rooms'), (snap)=>{
+    const val = snap.val() || {};
     rooms.forEach(r => setCard(r, val));
   });
 </script>
