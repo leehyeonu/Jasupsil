@@ -1,6 +1,6 @@
 <!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>교실 소음·집중도 알리미 - 대시보드</title>
+<title>교실 소음·집중도 알리미 - 대시보드(dB)</title>
 <style>
   :root { --bg:#0f172a; --card:#111827cc; --text:#e5e7eb; --muted:#94a3b8; }
   body { margin:0; font-family:system-ui,-apple-system,Segoe UI,Roboto; background:radial-gradient(1200px 800px at 20% 10%, #0b1220, #0f172a); color:var(--text); }
@@ -17,7 +17,7 @@
 </style>
 
 <header>
-  <strong>교실 소음·집중도 알리미 · 대시보드</strong>
+  <strong>교실 소음·집중도 알리미 · 대시보드(dB)</strong>
   <span style="color:var(--muted); font-size:14px;">실시간 · 9개 반</span>
 </header>
 <div class="grid" id="grid"></div>
@@ -34,12 +34,14 @@
     messagingSenderId: "1042128694552",
     appId: "1:1042128694552:web:716099a644d957cd9e026d"
   };
-
   const app = initializeApp(firebaseConfig);
   const db = getDatabase(app);
 
   const rooms = Array.from({length:9}, (_,i)=> String(i+1));
   const grid = document.getElementById('grid');
+
+  const MIN_DB=30, MAX_DB=80;
+  const scale=(v)=>Math.min(100, Math.max(0, Math.round((v - MIN_DB)/(MAX_DB - MIN_DB)*100)));
 
   const cardTemplate = r => `
     <div class="card" id="card-${r}">
@@ -50,7 +52,7 @@
       <div id="state-${r}" class="state">-</div>
       <div class="bar"><div id="fill-${r}" class="fill"></div></div>
       <div class="meta">
-        <span>EMA: <span id="ema-${r}">0.000</span></span>
+        <span>dB: <span id="db-${r}">0.0</span></span>
         <span>업데이트: <span id="age-${r}">-</span></span>
         <span>모드: <span id="mode-${r}">selfstudy</span></span>
       </div>
@@ -60,7 +62,7 @@
   function setCard(r, snapshotValue){
     const data = snapshotValue?.[r];
     const stateEl = document.getElementById('state-'+r);
-    const emaEl = document.getElementById('ema-'+r);
+    const dbEl = document.getElementById('db-'+r);
     const ageEl = document.getElementById('age-'+r);
     const fillEl = document.getElementById('fill-'+r);
     const badge = document.getElementById('badge-'+r);
@@ -68,17 +70,15 @@
 
     if (!data || !data.now){
       stateEl.textContent='오프라인';
-      emaEl.textContent='0.000';
+      dbEl.textContent='0.0';
       ageEl.textContent='-';
       fillEl.style.width='0%';
       badge.textContent='OFFLINE'; badge.style.background='#cbd5e1';
+      modeEl.textContent='selfstudy';
       return;
     }
-    const { ema=0, level='-', ts=0 } = data.now;
+    const { db=0, level='-', ts=0 } = data.now;
     const ageSec = ts ? Math.floor((Date.now()-ts)/1000) : null;
-    modeEl.textContent = data.mode || 'selfstudy';
-
-    // 15초 이내면 온라인으로 간주(업로드 10초 주기 고려)
     const online = ts && ageSec<=15;
 
     let bg='#cbd5e1', label='OFFLINE';
@@ -90,9 +90,9 @@
     badge.textContent=label; badge.style.background=bg;
 
     stateEl.textContent = online ? level : '오프라인';
-    emaEl.textContent = Number(ema).toFixed(3);
+    dbEl.textContent = Number(db).toFixed(1);
     ageEl.textContent = ts ? (online ? `${ageSec}s 전` : `${ageSec}s 지남`) : '-';
-    fillEl.style.width = Math.max(0, Math.min(100, Math.round(Number(ema)*100))) + '%';
+    fillEl.style.width = scale(Number(db)) + '%';
   }
 
   onValue(ref(db, 'rooms'), (snap)=>{
