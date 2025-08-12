@@ -2,20 +2,18 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>교실 소음·집중도 알리미 - 센서</title>
 <style>
-  :root {
-    --bg:#0f172a; --card:#111827cc; --text:#e5e7eb;
-    --green:#22c55e; --yellow:#f59e0b; --red:#ef4444; --muted:#64748b;
-  }
-  body { margin:0; font-family:system-ui, -apple-system, Segoe UI, Roboto; background:linear-gradient(135deg,#0f172a 0%,#111827 100%); color:var(--text); }
-  header,footer { padding:12px 16px; backdrop-filter: blur(10px); background: #0b1220aa; }
-  .wrap { min-height: calc(100vh - 110px); display:flex; align-items:center; justify-content:center; }
-  .card { width:min(900px,96vw); background:var(--card); border-radius:16px; padding:20px; box-shadow: 0 10px 30px rgba(0,0,0,.35);}
-  .row { display:flex; gap:12px; flex-wrap:wrap; align-items:center;}
-  select, button { height:42px; border-radius:10px; border:1px solid #1f2937; background:#0b1220; color:var(--text); padding:0 12px; }
+  :root { --bg:#0f172a; --card:#111827cc; --text:#e5e7eb; --muted:#94a3b8; }
+  body { margin:0; font-family:system-ui,-apple-system,Segoe UI,Roboto; background:linear-gradient(135deg,#0f172a,#111827); color:var(--text); }
+  header,footer { padding:12px 16px; background:#0b1220aa; backdrop-filter:blur(8px); }
+  .wrap { min-height:calc(100vh - 110px); display:flex; align-items:center; justify-content:center; }
+  .card { width:min(900px,96vw); background:var(--card); border-radius:16px; padding:20px; box-shadow:0 10px 30px rgba(0,0,0,.35); }
+  .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+  select,button { height:42px; border-radius:10px; border:1px solid #1f2937; background:#0b1220; color:var(--text); padding:0 12px; }
   button.primary { background:#2563eb; border-color:#1d4ed8; }
-  .led { height:42vh; border-radius:14px; display:flex; align-items:center; justify-content:center; font-size: clamp(24px,4vw,40px); font-weight:700; margin-top:14px; transition: background 200ms, color 200ms; }
+  .pill { display:inline-flex; align-items:center; gap:8px; padding:6px 10px; border-radius:999px; background:#0b1220; border:1px solid #1f2937; font-size:14px; color:var(--muted); }
+  .led { height:40vh; border-radius:14px; display:flex; align-items:center; justify-content:center; font-size:clamp(24px,4vw,40px); font-weight:700; margin-top:12px; transition:background 200ms,color 200ms; }
   .hint { color:var(--muted); font-size:14px; margin-top:8px; }
-  .pill { display:inline-flex; align-items:center; gap:8px; padding:6px 10px; border-radius:999px; background:#0b1220; border:1px solid #1f2937; font-size:14px;}
+  canvas { display:block; width:100%; margin-top:10px; border-radius:8px; background:#0b1220; border:1px solid #1f2937; }
 </style>
 
 <header class="row" style="justify-content:space-between;">
@@ -25,7 +23,7 @@
     <span class="pill">자습 전용</span>
   </div>
   <div class="row">
-    <label>반 선택</label>
+    <label>반</label>
     <select id="room">
       <option value="1">1반</option><option value="2">2반</option><option value="3">3반</option>
       <option value="4">4반</option><option value="5">5반</option><option value="6">6반</option>
@@ -39,26 +37,23 @@
 <div class="wrap">
   <div class="card">
     <div id="led" class="led" style="background:#0b1220; color:#93c5fd;">대기 중</div>
-    <canvas id="spark" height="80" style="width:100%; margin-top:10px; border-radius:8px; background:#0b1220; border:1px solid #1f2937;"></canvas>
+    <canvas id="spark" height="80"></canvas>
     <div class="row" style="margin-top:12px;">
       <div class="pill">EMA: <span id="ema">0.000</span></div>
       <div class="pill">상태: <span id="state">-</span></div>
       <div class="pill">업로드: <span id="sent">-</span></div>
     </div>
-    <div class="hint">임계치 고정값(자습 모드): 주의 0.30 · 시끄러움 0.60. 장치·교실마다 상대값이며 녹음은 하지 않습니다.</div>
+    <div class="hint">임계치(고정): 주의 0.30 · 시끄러움 0.60. 장치마다 상대값이며 녹음은 하지 않습니다.</div>
   </div>
 </div>
 
-<footer>마이크 사용 시 안내: “원음 저장·전송 없음, 집계치(숫자)만 전송, 세션 종료 즉시 중지 가능”</footer>
+<footer>마이크 안내: “원음 저장/전송 없음, 숫자 집계치만 전송, 중지 시 즉시 종료”</footer>
 
-<!-- Firebase v10 compat (Realtime Database) -->
-<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
 <script type="module">
   import { initializeApp } from "https://www.gstatic.com/firebasejs/12.1.0/firebase-app.js";
-  import { getDatabase, ref, set, update, remove } from "https://www.gstatic.com/firebasejs/12.1.0/firebase-database.js";
+  import { getDatabase, ref, set, remove } from "https://www.gstatic.com/firebasejs/12.1.0/firebase-database.js";
 
-  // 현우님 구성값
+  // 현우님 Firebase 구성
   const firebaseConfig = {
     apiKey: "AIzaSyDMRpooeNP3Jds7o-TglR9S50gAkObQE8A",
     authDomain: "jasupsil.firebaseapp.com",
@@ -71,7 +66,7 @@
   const app = initializeApp(firebaseConfig);
   const db = getDatabase(app);
 
-  // 고정 임계치(자습 전용)
+  // 고정 임계치
   const CAUTION = 0.30, NOISY = 0.60;
 
   // DOM
@@ -85,166 +80,121 @@
   const startBtn = document.getElementById('start');
   const stopBtn = document.getElementById('stop');
 
-  // 오디오/루프 상태
-  let audioCtx = null, analyser = null, stream = null;
-  let rafId = 0, sampleTimer = 0, uploadTimer = 0;
-  let ema = 0, alpha = 0.3;
+  // 상태
+  let audioCtx=null, analyser=null, stream=null;
+  let rafId=0, sampleTimer=0, uploadTimer=0;
+  let ema=0, alpha=0.3;
 
-  // 60초 스파크라인 버퍼(100ms 간격 → 600 샘플)
-  const SPARK_MS = 100;
-  const MAX_SAMPLES = 600;
-  const samples = [];
+  // 그래프(100ms), 업로드(10초)
+  const SPARK_MS=100, MAX_SAMPLES=600; const samples=[];
+  const UPLOAD_MS=10000; const agg=[];
 
-  // 10초 집계 버퍼
-  const UPLOAD_MS = 10000; // 10초
-  const agg = [];
-
-  function getLevel(v){ return v > NOISY ? '시끄러움' : (v > CAUTION ? '주의' : '정상'); }
+  function getLevel(v){ return v>NOISY?'시끄러움':(v>CAUTION?'주의':'정상'); }
 
   function setLED(level, v){
-    let bg = '#0b1220', fg = '#93c5fd';
-    if (level==='정상'){ bg = 'linear-gradient(135deg,#052e16,#14532d)'; fg='#d1fae5'; }
-    if (level==='주의'){ bg = 'linear-gradient(135deg,#3b2f0b,#92400e)'; fg='#fff7ed'; }
-    if (level==='시끄러움'){ bg = 'linear-gradient(135deg,#450a0a,#7f1d1d)'; fg='#fee2e2'; }
-    led.style.background = bg; led.style.color = fg;
-    led.textContent = level;
-    emaEl.textContent = v.toFixed(3);
-    stateEl.textContent = level;
+    let bg='#0b1220', fg='#93c5fd';
+    if (level==='정상'){ bg='linear-gradient(135deg,#052e16,#14532d)'; fg='#d1fae5'; }
+    if (level==='주의'){ bg='linear-gradient(135deg,#3b2f0b,#92400e)'; fg='#fff7ed'; }
+    if (level==='시끄러움'){ bg='linear-gradient(135deg,#450a0a,#7f1d1d)'; fg='#fee2e2'; }
+    led.style.background=bg; led.style.color=fg; led.textContent=level;
+    emaEl.textContent=v.toFixed(3); stateEl.textContent=level;
   }
 
   function drawSpark(){
-    const w = spark.clientWidth, h = spark.height;
-    // 고해상도 렌더링
-    if (spark.width !== w) spark.width = w;
+    const w=spark.clientWidth, h=spark.height;
+    if (spark.width!==w) spark.width=w;
     ctx.clearRect(0,0,w,h);
-    // 축/배경 가이드
-    ctx.strokeStyle = '#1f2937'; ctx.lineWidth = 1;
-    ctx.beginPath(); ctx.moveTo(0, h*0.4); ctx.lineTo(w, h*0.4); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(0, h*0.6); ctx.lineTo(w, h*0.6); ctx.stroke();
-
-    if (samples.length < 2) return;
-    ctx.strokeStyle = '#60a5fa'; ctx.lineWidth = 2;
-    ctx.beginPath();
+    ctx.strokeStyle='#1f2937'; ctx.lineWidth=1;
+    ctx.beginPath(); ctx.moveTo(0,h*0.4); ctx.lineTo(w,h*0.4); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0,h*0.6); ctx.lineTo(w,h*0.6); ctx.stroke();
+    if (samples.length<2) return;
+    ctx.strokeStyle='#60a5fa'; ctx.lineWidth=2; ctx.beginPath();
     for (let i=0;i<samples.length;i++){
-      const x = i * (w / (MAX_SAMPLES-1));
-      const y = h - Math.min(h, Math.max(0, samples[i] * h)); // 0~1 → 0~h
+      const x=i*(w/(MAX_SAMPLES-1));
+      const y=h - Math.min(h, Math.max(0, samples[i]*h));
       if (i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
     }
     ctx.stroke();
   }
 
   function loop(){
-    const buf = new Uint8Array(analyser.fftSize);
+    const buf=new Uint8Array(analyser.fftSize);
     analyser.getByteTimeDomainData(buf);
-    let sum = 0;
-    for (let i=0;i<buf.length;i++){ const v=(buf[i]-128)/128; sum += v*v; }
-    const rms = Math.sqrt(sum / buf.length);
-    ema = alpha * rms + (1 - alpha) * ema;
-
-    const level = getLevel(ema);
-    setLED(level, ema);
-
-    rafId = requestAnimationFrame(loop);
+    let sum=0; for(let i=0;i<buf.length;i++){ const v=(buf[i]-128)/128; sum+=v*v; }
+    const rms=Math.sqrt(sum/buf.length);
+    ema = alpha*rms + (1-alpha)*ema;
+    setLED(getLevel(ema), ema);
+    rafId=requestAnimationFrame(loop);
   }
 
   function startSampling(){
-    // 100ms마다 샘플 저장 + 스파크라인 갱신
-    sampleTimer = setInterval(()=>{
-      samples.push(Math.min(1, Math.max(0, ema)));
+    sampleTimer=setInterval(()=>{
+      samples.push(Math.min(1,Math.max(0,ema)));
+      if (samples.length>MAX_SAMPLES) samples.shift();
       agg.push(ema);
-      if (samples.length > MAX_SAMPLES) samples.shift();
       drawSpark();
     }, SPARK_MS);
 
-    // 10초마다 평균 업로드
-    uploadTimer = setInterval(async ()=>{
-      if (agg.length === 0) return;
-      const avg = agg.reduce((a,b)=>a+b,0) / agg.length;
-      agg.length = 0;
-      const room = roomSel.value;
-      const now = Date.now();
-      const payload = { ema: +avg.toFixed(3), level: getLevel(avg), ts: now, online: true };
-      try{
-        await set(ref(db, `rooms/${room}/now`), payload);
-        sentEl.textContent = new Date(now).toLocaleTimeString();
-      }catch(e){ console.error(e); }
+    uploadTimer=setInterval(async ()=>{
+      if (!agg.length) return;
+      const avg=agg.reduce((a,b)=>a+b,0)/agg.length; agg.length=0;
+      const now=Date.now(); const room=roomSel.value;
+      const payload={ ema:+avg.toFixed(3), level:getLevel(avg), ts:now, online:true };
+      try{ await set(ref(db, `rooms/${room}/now`), payload); sentEl.textContent=new Date(now).toLocaleTimeString(); }
+      catch(e){ console.error(e); }
     }, UPLOAD_MS);
   }
 
   function stopAll(){
-    cancelAnimationFrame(rafId); rafId = 0;
-    clearInterval(sampleTimer); sampleTimer = 0;
-    clearInterval(uploadTimer); uploadTimer = 0;
-
+    cancelAnimationFrame(rafId); rafId=0;
+    clearInterval(sampleTimer); sampleTimer=0;
+    clearInterval(uploadTimer); uploadTimer=0;
     try{ stream?.getTracks().forEach(t=>t.stop()); }catch{}
-    stream = null;
-
+    stream=null;
     if (audioCtx){
-      // 일부 브라우저는 close 전에 resume 필요
-      if (audioCtx.state === 'suspended') audioCtx.resume().catch(()=>{});
-      audioCtx.close().catch(()=>{});
-      audioCtx = null; analyser = null;
+      if (audioCtx.state==='suspended'){ try{ audioCtx.resume(); }catch{} }
+      try{ audioCtx.close(); }catch{}
+      audioCtx=null; analyser=null;
     }
   }
 
   async function markOffline(){
-    const room = roomSel.value;
-    try{
-      await remove(ref(db, `rooms/${room}/now`));
-    }catch(e){ console.error(e); }
+    const room=roomSel.value;
+    try{ await remove(ref(db, `rooms/${room}/now`)); }catch(e){ console.error(e); }
   }
 
   async function start(){
-    // 권한 요청 및 오디오 그래프 구성
     try{
-      const ms = { audio: { echoCancellation:true, noiseSuppression:true }, video:false };
-      stream = await navigator.mediaDevices.getUserMedia(ms);
-
-      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      const source = audioCtx.createMediaStreamSource(stream);
-      analyser = audioCtx.createAnalyser();
-      analyser.fftSize = 1024;
-      source.connect(analyser);
-
-      // iOS/안드로이드에서 suspend 상태 해소
-      if (audioCtx.state !== 'running'){
-        await audioCtx.resume().catch(()=>{});
-      }
-
-      // 온라인 상태 마킹
-      const room = roomSel.value;
-      await update(ref(db, `rooms/${room}`), { room, mode: 'selfstudy' });
-
-      // 루프 시작
-      loop();
-      startSampling();
-
-      startBtn.disabled = true; stopBtn.disabled = false;
+      stream = await navigator.mediaDevices.getUserMedia({ audio:{ echoCancellation:true, noiseSuppression:true }, video:false });
+      audioCtx = new (window.AudioContext||window.webkitAudioContext)();
+      const source=audioCtx.createMediaStreamSource(stream);
+      analyser=audioCtx.createAnalyser(); analyser.fftSize=1024; source.connect(analyser);
+      if (audioCtx.state!=='running'){ try{ await audioCtx.resume(); }catch{} }
+      loop(); startSampling();
+      startBtn.disabled=true; stopBtn.disabled=false;
     }catch(err){
-      alert('마이크 사용이 거부되었거나 장치에서 입력을 가져올 수 없습니다. HTTPS 접속과 권한 허용을 확인해 주세요.');
+      let msg='마이크 사용을 시작할 수 없습니다. ';
+      if (err?.name==='NotAllowedError') msg+='사이트의 마이크 권한을 허용해 주세요.';
+      else if (err?.name==='SecurityError') msg+='HTTPS로 접속했는지 확인해 주세요.';
+      else if (err?.name==='NotReadableError') msg+='다른 앱이 마이크를 사용 중일 수 있습니다.';
+      else if (err?.name==='NotFoundError') msg+='마이크 장치가 없거나 비활성화되었습니다.';
+      alert(msg);
       console.error(err);
-      await markOffline();
-      stopAll();
+      await markOffline(); stopAll();
     }
   }
 
   async function stop(){
-    await markOffline();
-    stopAll();
-    // UI 초기화
-    led.style.background = '#0b1220'; led.style.color = '#93c5fd'; led.textContent = '종료';
-    emaEl.textContent = '0.000'; stateEl.textContent = '-'; sentEl.textContent = '-';
-    samples.length = 0; agg.length = 0; drawSpark();
-    startBtn.disabled = false; stopBtn.disabled = true;
+    await markOffline(); stopAll();
+    led.style.background='#0b1220'; led.style.color='#93c5fd'; led.textContent='종료';
+    emaEl.textContent='0.000'; stateEl.textContent='-'; sentEl.textContent='-';
+    samples.length=0; agg.length=0; drawSpark();
+    startBtn.disabled=false; stopBtn.disabled=true;
   }
 
-  // 페이지 숨김 시 자동 일시정지(선택)
   document.addEventListener('visibilitychange', async ()=>{
-    if (document.hidden && stopBtn.disabled === false){
-      await stop();
-    }
+    if (document.hidden && stopBtn.disabled===false){ await stop(); }
   });
 
-  startBtn.onclick = start;
-  stopBtn.onclick = stop;
-  </script>
+  startBtn.onclick=start; stopBtn.onclick=stop;
+</script>
