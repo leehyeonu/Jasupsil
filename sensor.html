@@ -1,0 +1,149 @@
+<!doctype html>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>교실 소음·집중도 알리미 - 센서</title>
+<style>
+  :root {
+    --bg:#0f172a; --card:#111827cc; --text:#e5e7eb;
+    --green:#22c55e; --yellow:#f59e0b; --red:#ef4444; --muted:#64748b;
+  }
+  body { margin:0; font-family:system-ui, -apple-system, Segoe UI, Roboto; background:linear-gradient(135deg,#0f172a 0%,#111827 100%); color:var(--text); }
+  header,footer { padding:12px 16px; backdrop-filter: blur(10px); background: #0b1220aa; }
+  .wrap { min-height: calc(100vh - 110px); display:flex; align-items:center; justify-content:center; }
+  .card { width:min(900px,96vw); background:var(--card); border-radius:16px; padding:20px; box-shadow: 0 10px 30px rgba(0,0,0,.35);}
+  .row { display:flex; gap:12px; flex-wrap:wrap; align-items:center;}
+  select, button { height:42px; border-radius:10px; border:1px solid #1f2937; background:#0b1220; color:var(--text); padding:0 12px; }
+  button.primary { background:#2563eb; border-color:#1d4ed8; }
+  .led { height:42vh; border-radius:14px; display:flex; align-items:center; justify-content:center; font-size: clamp(24px,4vw,40px); font-weight:700; margin-top:14px; transition: background 200ms, color 200ms; }
+  .hint { color:var(--muted); font-size:14px; margin-top:8px; }
+  .pill { display:inline-flex; align-items:center; gap:8px; padding:6px 10px; border-radius:999px; background:#0b1220; border:1px solid #1f2937; font-size:14px;}
+</style>
+
+<header class="row" style="justify-content:space-between;">
+  <div class="row">
+    <strong>교실 소음·집중도 알리미 · 센서</strong>
+    <span class="pill">원음 미저장</span>
+    <span class="pill">자습 전용</span>
+  </div>
+  <div class="row">
+    <label>반 선택</label>
+    <select id="room">
+      <option value="1">1반</option><option value="2">2반</option><option value="3">3반</option>
+      <option value="4">4반</option><option value="5">5반</option><option value="6">6반</option>
+      <option value="7">7반</option><option value="8">8반</option><option value="9">9반</option>
+    </select>
+    <button id="start" class="primary">시작</button>
+    <button id="stop" disabled>중지</button>
+  </div>
+</header>
+
+<div class="wrap">
+  <div class="card">
+    <div id="led" class="led" style="background:#0b1220; color:#93c5fd;">대기 중</div>
+    <div class="row" style="margin-top:12px;">
+      <div class="pill">EMA: <span id="ema">0.000</span></div>
+      <div class="pill">상태: <span id="state">-</span></div>
+      <div class="pill">업로드: <span id="sent">-</span></div>
+    </div>
+    <div class="hint">임계치 고정값(자습 모드): 주의 0.30 · 시끄러움 0.60. 장치·교실마다 상대값이며 녹음은 하지 않습니다.</div>
+  </div>
+</div>
+
+<footer>마이크 사용 시 안내: “원음 저장·전송 없음, 집계치(숫자)만 전송, 세션 종료 즉시 중지 가능”</footer>
+
+<!-- Firebase v10 compat (Realtime Database) -->
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/12.1.0/firebase-app.js";
+  import { getDatabase, ref, set, update } from "https://www.gstatic.com/firebasejs/12.1.0/firebase-database.js";
+
+  // 현우님 구성값 그대로 사용(Analytics는 생략 가능)
+  const firebaseConfig = {
+    apiKey: "AIzaSyDMRpooeNP3Jds7o-TglR9S50gAkObQE8A",
+    authDomain: "jasupsil.firebaseapp.com",
+    databaseURL: "https://jasupsil-default-rtdb.firebaseio.com",
+    projectId: "jasupsil",
+    // storageBucket: "jasupsil.appspot.com", // 스토리지 미사용이면 생략 가능
+    messagingSenderId: "1042128694552",
+    appId: "1:1042128694552:web:716099a644d957cd9e026d"
+    // measurementId: "G-G192218RSV" // Analytics 미사용이면 생략
+  };
+
+  const app = initializeApp(firebaseConfig);
+  const db = getDatabase(app);
+
+  // 고정 임계치(자습 전용)
+  const CAUTION = 0.30, NOISY = 0.60;
+
+  const roomSel = document.getElementById('room');
+  const led = document.getElementById('led');
+  const emaEl = document.getElementById('ema');
+  const stateEl = document.getElementById('state');
+  const sentEl = document.getElementById('sent');
+  const startBtn = document.getElementById('start');
+  const stopBtn = document.getElementById('stop');
+
+  let audioCtx, analyser, stream, rafId;
+  let ema = 0, alpha = 0.3, lastSent = 0;
+
+  const setLED = (level, v) => {
+    let bg = '#0b1220', fg = '#93c5fd';
+    if (level==='정상'){ bg = 'linear-gradient(135deg,#052e16,#14532d)'; fg='#d1fae5'; }
+    if (level==='주의'){ bg = 'linear-gradient(135deg,#3b2f0b,#92400e)'; fg='#fff7ed'; }
+    if (level==='시끄러움'){ bg = 'linear-gradient(135deg,#450a0a,#7f1d1d)'; fg='#fee2e2'; }
+    led.style.background = bg; led.style.color = fg;
+    led.textContent = level;
+    emaEl.textContent = v.toFixed(3);
+    stateEl.textContent = level;
+  };
+  const getLevel = v => v > NOISY ? '시끄러움' : (v > CAUTION ? '주의' : '정상');
+
+  async function start() {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation:true, noiseSuppression:true }, video:false });
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const source = audioCtx.createMediaStreamSource(stream);
+    analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 1024;
+    source.connect(analyser);
+
+    // 온라인 상태 마킹
+    const room = roomSel.value;
+    await update(ref(db, `rooms/${room}`), { room, mode: 'selfstudy' });
+
+    loop();
+    startBtn.disabled = true; stopBtn.disabled = false;
+  }
+
+  function stop() {
+    cancelAnimationFrame(rafId);
+    stream?.getTracks().forEach(t=>t.stop());
+    audioCtx?.close();
+    startBtn.disabled = false; stopBtn.disabled = true;
+    led.style.background = '#0b1220'; led.textContent = '종료';
+  }
+
+  function loop() {
+    const buf = new Uint8Array(analyser.fftSize);
+    analyser.getByteTimeDomainData(buf);
+    let sum = 0;
+    for (let i=0;i<buf.length;i++){ const v=(buf[i]-128)/128; sum += v*v; }
+    const rms = Math.sqrt(sum / buf.length);
+    ema = alpha * rms + (1 - alpha) * ema;
+    const level = getLevel(ema);
+    setLED(level, ema);
+
+    const now = Date.now();
+    if (now - lastSent > 1000) {
+      lastSent = now;
+      const room = roomSel.value;
+      const payload = { ema: +ema.toFixed(3), level, ts: now, online: true };
+      set(ref(db, `rooms/${room}/now`), payload)
+        .then(()=> sentEl.textContent = new Date(now).toLocaleTimeString())
+        .catch(console.error);
+    }
+    rafId = requestAnimationFrame(loop);
+  }
+
+  startBtn.onclick = start;
+  stopBtn.onclick = stop;
+</script>
