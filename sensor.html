@@ -50,6 +50,12 @@
 <footer>마이크 안내: “원음 저장/전송 없음, 10초 평균 dB만 전송, 중지 시 즉시 종료”</footer>
 
 <script type="module">
+  // dB 전용 센서 스크립트(수정판): 조용한 공간 평균 20 dB, 최대 66 dB 가정
+  // - 표시/업로드: dB(EMA 스무딩, 10초 평균)
+  // - 자동 교정: 최초 5초 dbFS 중앙값을 20 dB에 맞춰 오프셋 저장(localStorage)
+  // - 임계 고정: 주의 45 dB, 시끄러움 60 dB
+  // - 업로드 경로: rooms/{1~9}/now  (필드: db, level, ts, online)
+
   import { initializeApp } from "https://www.gstatic.com/firebasejs/12.1.0/firebase-app.js";
   import { getDatabase, ref, set, remove } from "https://www.gstatic.com/firebasejs/12.1.0/firebase-database.js";
 
@@ -65,33 +71,38 @@
   const app = initializeApp(firebaseConfig);
   const db = getDatabase(app);
 
-  // dB 임계·스케일(고정)
-  const CAUTION_DB = 55; const NOISY_DB = 65;       // 상태 기준
-  const MIN_DB = 30; const MAX_DB = 80;             // 그래프/바 스케일
-  const SPL_OFFSET = 85;                              // (선택) 오프셋, 동일 마이크 가정이므로 0
+  // dB 임계/스케일(고정)
+  const CAUTION_DB = 45;   // 주의
+  const NOISY_DB  = 60;   // 시끄러움
+  const MIN_DB    = 20;   // 표시 하한(조용 기준)
+  const MAX_DB    = 70;   // 표시 상한(최대 66 dB 고려)
+  const TARGET_QUIET_DB = 20; // 자동 교정 목표(조용한 곳 평균 20 dB)
 
-  // DOM
+  // 자동 교정 오프셋: 저장값 사용, 없으면 5초간 측정해 산출
+  let SPL_OFFSET = Number(localStorage.getItem("splOffset") ?? "NaN");
+
+  // DOM 참조
   const roomSel = document.getElementById('room');
-  const led = document.getElementById('led');
-  const dbEl = document.getElementById('db');
+  const led     = document.getElementById('led');
+  const dbEl    = document.getElementById('db');
   const stateEl = document.getElementById('state');
-  const sentEl = document.getElementById('sent');
-  const spark = document.getElementById('spark');
-  const ctx = spark.getContext('2d');
-  const startBtn = document.getElementById('start');
+  const sentEl  = document.getElementById('sent');
+  const spark   = document.getElementById('spark');
+  const ctx     = spark.getContext('2d');
+  const startBtn= document.getElementById('start');
   const stopBtn = document.getElementById('stop');
 
   // 상태
   let audioCtx=null, analyser=null, stream=null;
   let rafId=0, sampleTimer=0, uploadTimer=0;
-  let dbEma=0; const alpha=0.3;  // dB도 화면 안정화를 위해 EMA 적용
+  let dbEma=MIN_DB; const alpha=0.3;  // dB 표시는 EMA로 안정화
 
   // 실시간(100ms)·업로드(10초)
   const SPARK_MS=100, MAX_SAMPLES=600; const samples=[];
   const UPLOAD_MS=10000; const agg=[];
 
   const clamp=(v,a,b)=>Math.min(b,Math.max(a,v));
-  const scale=(v)=>clamp((v - MIN_DB)/(MAX_DB - MIN_DB), 0, 1);
+  const scale01=(v)=>clamp((v - MIN_DB)/(MAX_DB - MIN_DB), 0, 1);
   const levelOf=(d)=> d>=NOISY_DB ? '시끄러움' : (d>=CAUTION_DB ? '주의' : '정상');
 
   function setLED(level, d){
@@ -109,13 +120,14 @@
     if (spark.width!==w) spark.width=w;
     ctx.clearRect(0,0,w,h);
     ctx.strokeStyle='#1f2937'; ctx.lineWidth=1;
+    // 가이드 라인
     ctx.beginPath(); ctx.moveTo(0,h*0.4); ctx.lineTo(w,h*0.4); ctx.stroke();
     ctx.beginPath(); ctx.moveTo(0,h*0.6); ctx.lineTo(w,h*0.6); ctx.stroke();
     if (samples.length<2) return;
     ctx.strokeStyle='#60a5fa'; ctx.lineWidth=2; ctx.beginPath();
     for (let i=0;i<samples.length;i++){
       const x=i*(w/(MAX_SAMPLES-1));
-      const y=h - Math.min(h, Math.max(0, samples[i]*h));
+      const y=h - Math.min(h, Math.max(0, samples[i]*h)); // 0~1 → 0~h
       if (i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
     }
     ctx.stroke();
@@ -125,27 +137,31 @@
     const buf=new Uint8Array(analyser.fftSize);
     analyser.getByteTimeDomainData(buf);
     let sum=0; for(let i=0;i<buf.length;i++){ const v=(buf[i]-128)/128; sum+=v*v; }
-    const rms=Math.sqrt(sum/buf.length);
-    const dbfs = 20 * Math.log10(rms + 1e-8); // 상대 dB
-    const dB = dbfs + SPL_OFFSET;             // 동일 마이크 가정 → 오프셋 0
-    dbEma = alpha*dB + (1-alpha)*dbEma;       // 표시는 EMA로 안정화
-    setLED(levelOf(dbEma), dbEma);
+    const rms = Math.sqrt(sum/buf.length);
+    const dbfs = 20 * Math.log10(rms + 1e-8);          // 상대 dB
+    const offset = Number.isNaN(SPL_OFFSET) ? 0 : SPL_OFFSET;
+    const dB = dbfs + offset;                           // 보정 적용
+    dbEma = alpha*dB + (1-alpha)*dbEma;                 // EMA 스무딩
+    const dBview = clamp(dbEma, MIN_DB, MAX_DB);        // 표시 범위 클램프
+    setLED(levelOf(dBview), dBview);
     rafId=requestAnimationFrame(loop);
   }
 
   function startSampling(){
+    // 100ms: 그래프·집계 버퍼
     sampleTimer=setInterval(()=>{
-      samples.push(scale(dbEma));
+      samples.push(scale01(clamp(dbEma, MIN_DB, MAX_DB)));
       if (samples.length>MAX_SAMPLES) samples.shift();
       agg.push(dbEma);
       drawSpark();
     }, SPARK_MS);
 
+    // 10초: 평균 dB 업로드
     uploadTimer=setInterval(async ()=>{
       if (!agg.length) return;
       const avg = agg.reduce((a,b)=>a+b,0)/agg.length; agg.length=0;
-      const now=Date.now(); const room=roomSel.value;
-      const payload={ db:+avg.toFixed(1), level:levelOf(avg), ts:now, online:true };
+      const now = Date.now(); const room=roomSel.value;
+      const payload = { db:+avg.toFixed(1), level:levelOf(avg), ts:now, online:true };
       try{ await set(ref(db, `rooms/${room}/now`), payload); sentEl.textContent=new Date(now).toLocaleTimeString(); }
       catch(e){ console.error(e); }
     }, UPLOAD_MS);
@@ -169,6 +185,32 @@
     try{ await remove(ref(db, `rooms/${room}/now`)); }catch(e){ console.error(e); }
   }
 
+  // 최초 5초 자동 교정: 조용한 상태에서 중앙값을 20 dB로 맞춤
+  function autoCalibrate(){
+    if (!Number.isNaN(SPL_OFFSET)){
+      return; // 이미 보정값 있음
+    }
+    const cal=[]; let count=0;
+    const t = setInterval(()=>{
+      if (!analyser) return;
+      const buf=new Uint8Array(analyser.fftSize);
+      analyser.getByteTimeDomainData(buf);
+      let sum=0; for(let i=0;i<buf.length;i++){ const v=(buf[i]-128)/128; sum+=v*v; }
+      const rms = Math.sqrt(sum/buf.length);
+      const dbfs = 20 * Math.log10(rms + 1e-8);
+      cal.push(dbfs); count++;
+      if (count>=50){ // 약 5초(100ms*50)
+        clearInterval(t);
+        cal.sort((a,b)=>a-b);
+        const median = cal[Math.floor(cal.length/2)];
+        SPL_OFFSET = TARGET_QUIET_DB - median;
+        localStorage.setItem('splOffset', SPL_OFFSET.toFixed(1));
+        // 즉시 반영을 위해 EMA도 살짝 당겨줌
+        dbEma = TARGET_QUIET_DB;
+      }
+    }, 100);
+  }
+
   async function start(){
     try{
       stream = await navigator.mediaDevices.getUserMedia({
@@ -178,6 +220,9 @@
       const source=audioCtx.createMediaStreamSource(stream);
       analyser=audioCtx.createAnalyser(); analyser.fftSize=1024; source.connect(analyser);
       if (audioCtx.state!=='running'){ try{ await audioCtx.resume(); }catch{} }
+      // 자동 교정 시작(보정 없을 때만)
+      autoCalibrate();
+      // 측정·업로드 루프 시작
       loop(); startSampling();
       startBtn.disabled=true; stopBtn.disabled=false;
     }catch(err){
@@ -199,8 +244,10 @@
     startBtn.disabled=false; stopBtn.disabled=true;
   }
 
+  // 백그라운드 이동 시 자동 중지(유령 온라인 방지)
   document.addEventListener('visibilitychange', async ()=>{
     if (document.hidden && stopBtn.disabled===false){ await stop(); }
   });
+
   startBtn.onclick=start; stopBtn.onclick=stop;
 </script>
