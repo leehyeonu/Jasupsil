@@ -39,6 +39,7 @@
 <div class="wrap">
   <div class="card">
     <div id="led" class="led" style="background:#0b1220; color:#93c5fd;">대기 중</div>
+    <canvas id="spark" height="80" style="width:100%; margin-top:10px; border-radius:8px; background:#0b1220; border:1px solid #1f2937;"></canvas>
     <div class="row" style="margin-top:12px;">
       <div class="pill">EMA: <span id="ema">0.000</span></div>
       <div class="pill">상태: <span id="state">-</span></div>
@@ -55,18 +56,16 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
 <script type="module">
   import { initializeApp } from "https://www.gstatic.com/firebasejs/12.1.0/firebase-app.js";
-  import { getDatabase, ref, set, update } from "https://www.gstatic.com/firebasejs/12.1.0/firebase-database.js";
+  import { getDatabase, ref, set, update, remove } from "https://www.gstatic.com/firebasejs/12.1.0/firebase-database.js";
 
-  // 현우님 구성값 그대로 사용(Analytics는 생략 가능)
+  // 현우님 구성값
   const firebaseConfig = {
     apiKey: "AIzaSyDMRpooeNP3Jds7o-TglR9S50gAkObQE8A",
     authDomain: "jasupsil.firebaseapp.com",
     databaseURL: "https://jasupsil-default-rtdb.firebaseio.com",
     projectId: "jasupsil",
-    // storageBucket: "jasupsil.appspot.com", // 스토리지 미사용이면 생략 가능
     messagingSenderId: "1042128694552",
     appId: "1:1042128694552:web:716099a644d957cd9e026d"
-    // measurementId: "G-G192218RSV" // Analytics 미사용이면 생략
   };
 
   const app = initializeApp(firebaseConfig);
@@ -75,18 +74,34 @@
   // 고정 임계치(자습 전용)
   const CAUTION = 0.30, NOISY = 0.60;
 
+  // DOM
   const roomSel = document.getElementById('room');
   const led = document.getElementById('led');
   const emaEl = document.getElementById('ema');
   const stateEl = document.getElementById('state');
   const sentEl = document.getElementById('sent');
+  const spark = document.getElementById('spark');
+  const ctx = spark.getContext('2d');
   const startBtn = document.getElementById('start');
   const stopBtn = document.getElementById('stop');
 
-  let audioCtx, analyser, stream, rafId;
-  let ema = 0, alpha = 0.3, lastSent = 0;
+  // 오디오/루프 상태
+  let audioCtx = null, analyser = null, stream = null;
+  let rafId = 0, sampleTimer = 0, uploadTimer = 0;
+  let ema = 0, alpha = 0.3;
 
-  const setLED = (level, v) => {
+  // 60초 스파크라인 버퍼(100ms 간격 → 600 샘플)
+  const SPARK_MS = 100;
+  const MAX_SAMPLES = 600;
+  const samples = [];
+
+  // 10초 집계 버퍼
+  const UPLOAD_MS = 10000; // 10초
+  const agg = [];
+
+  function getLevel(v){ return v > NOISY ? '시끄러움' : (v > CAUTION ? '주의' : '정상'); }
+
+  function setLED(level, v){
     let bg = '#0b1220', fg = '#93c5fd';
     if (level==='정상'){ bg = 'linear-gradient(135deg,#052e16,#14532d)'; fg='#d1fae5'; }
     if (level==='주의'){ bg = 'linear-gradient(135deg,#3b2f0b,#92400e)'; fg='#fff7ed'; }
@@ -95,55 +110,141 @@
     led.textContent = level;
     emaEl.textContent = v.toFixed(3);
     stateEl.textContent = level;
-  };
-  const getLevel = v => v > NOISY ? '시끄러움' : (v > CAUTION ? '주의' : '정상');
-
-  async function start() {
-    stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation:true, noiseSuppression:true }, video:false });
-    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    const source = audioCtx.createMediaStreamSource(stream);
-    analyser = audioCtx.createAnalyser();
-    analyser.fftSize = 1024;
-    source.connect(analyser);
-
-    // 온라인 상태 마킹
-    const room = roomSel.value;
-    await update(ref(db, `rooms/${room}`), { room, mode: 'selfstudy' });
-
-    loop();
-    startBtn.disabled = true; stopBtn.disabled = false;
   }
 
-  function stop() {
-    cancelAnimationFrame(rafId);
-    stream?.getTracks().forEach(t=>t.stop());
-    audioCtx?.close();
-    startBtn.disabled = false; stopBtn.disabled = true;
-    led.style.background = '#0b1220'; led.textContent = '종료';
+  function drawSpark(){
+    const w = spark.clientWidth, h = spark.height;
+    // 고해상도 렌더링
+    if (spark.width !== w) spark.width = w;
+    ctx.clearRect(0,0,w,h);
+    // 축/배경 가이드
+    ctx.strokeStyle = '#1f2937'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(0, h*0.4); ctx.lineTo(w, h*0.4); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, h*0.6); ctx.lineTo(w, h*0.6); ctx.stroke();
+
+    if (samples.length < 2) return;
+    ctx.strokeStyle = '#60a5fa'; ctx.lineWidth = 2;
+    ctx.beginPath();
+    for (let i=0;i<samples.length;i++){
+      const x = i * (w / (MAX_SAMPLES-1));
+      const y = h - Math.min(h, Math.max(0, samples[i] * h)); // 0~1 → 0~h
+      if (i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+    }
+    ctx.stroke();
   }
 
-  function loop() {
+  function loop(){
     const buf = new Uint8Array(analyser.fftSize);
     analyser.getByteTimeDomainData(buf);
     let sum = 0;
     for (let i=0;i<buf.length;i++){ const v=(buf[i]-128)/128; sum += v*v; }
     const rms = Math.sqrt(sum / buf.length);
     ema = alpha * rms + (1 - alpha) * ema;
+
     const level = getLevel(ema);
     setLED(level, ema);
 
-    const now = Date.now();
-    if (now - lastSent > 1000) {
-      lastSent = now;
-      const room = roomSel.value;
-      const payload = { ema: +ema.toFixed(3), level, ts: now, online: true };
-      set(ref(db, `rooms/${room}/now`), payload)
-        .then(()=> sentEl.textContent = new Date(now).toLocaleTimeString())
-        .catch(console.error);
-    }
     rafId = requestAnimationFrame(loop);
   }
 
+  function startSampling(){
+    // 100ms마다 샘플 저장 + 스파크라인 갱신
+    sampleTimer = setInterval(()=>{
+      samples.push(Math.min(1, Math.max(0, ema)));
+      agg.push(ema);
+      if (samples.length > MAX_SAMPLES) samples.shift();
+      drawSpark();
+    }, SPARK_MS);
+
+    // 10초마다 평균 업로드
+    uploadTimer = setInterval(async ()=>{
+      if (agg.length === 0) return;
+      const avg = agg.reduce((a,b)=>a+b,0) / agg.length;
+      agg.length = 0;
+      const room = roomSel.value;
+      const now = Date.now();
+      const payload = { ema: +avg.toFixed(3), level: getLevel(avg), ts: now, online: true };
+      try{
+        await set(ref(db, `rooms/${room}/now`), payload);
+        sentEl.textContent = new Date(now).toLocaleTimeString();
+      }catch(e){ console.error(e); }
+    }, UPLOAD_MS);
+  }
+
+  function stopAll(){
+    cancelAnimationFrame(rafId); rafId = 0;
+    clearInterval(sampleTimer); sampleTimer = 0;
+    clearInterval(uploadTimer); uploadTimer = 0;
+
+    try{ stream?.getTracks().forEach(t=>t.stop()); }catch{}
+    stream = null;
+
+    if (audioCtx){
+      // 일부 브라우저는 close 전에 resume 필요
+      if (audioCtx.state === 'suspended') audioCtx.resume().catch(()=>{});
+      audioCtx.close().catch(()=>{});
+      audioCtx = null; analyser = null;
+    }
+  }
+
+  async function markOffline(){
+    const room = roomSel.value;
+    try{
+      await remove(ref(db, `rooms/${room}/now`));
+    }catch(e){ console.error(e); }
+  }
+
+  async function start(){
+    // 권한 요청 및 오디오 그래프 구성
+    try{
+      const ms = { audio: { echoCancellation:true, noiseSuppression:true }, video:false };
+      stream = await navigator.mediaDevices.getUserMedia(ms);
+
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const source = audioCtx.createMediaStreamSource(stream);
+      analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 1024;
+      source.connect(analyser);
+
+      // iOS/안드로이드에서 suspend 상태 해소
+      if (audioCtx.state !== 'running'){
+        await audioCtx.resume().catch(()=>{});
+      }
+
+      // 온라인 상태 마킹
+      const room = roomSel.value;
+      await update(ref(db, `rooms/${room}`), { room, mode: 'selfstudy' });
+
+      // 루프 시작
+      loop();
+      startSampling();
+
+      startBtn.disabled = true; stopBtn.disabled = false;
+    }catch(err){
+      alert('마이크 사용이 거부되었거나 장치에서 입력을 가져올 수 없습니다. HTTPS 접속과 권한 허용을 확인해 주세요.');
+      console.error(err);
+      await markOffline();
+      stopAll();
+    }
+  }
+
+  async function stop(){
+    await markOffline();
+    stopAll();
+    // UI 초기화
+    led.style.background = '#0b1220'; led.style.color = '#93c5fd'; led.textContent = '종료';
+    emaEl.textContent = '0.000'; stateEl.textContent = '-'; sentEl.textContent = '-';
+    samples.length = 0; agg.length = 0; drawSpark();
+    startBtn.disabled = false; stopBtn.disabled = true;
+  }
+
+  // 페이지 숨김 시 자동 일시정지(선택)
+  document.addEventListener('visibilitychange', async ()=>{
+    if (document.hidden && stopBtn.disabled === false){
+      await stop();
+    }
+  });
+
   startBtn.onclick = start;
   stopBtn.onclick = stop;
-</script>
+  </script>
